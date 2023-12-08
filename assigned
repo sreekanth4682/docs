@@ -1,0 +1,103 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"sort"
+	"sync"
+	"time"
+)
+
+type RequestPayload struct {
+	ToSort [][]int `json:"to_sort"`
+}
+
+type ResponsePayload struct {
+	SortedArrays [][]int `json:"sorted_arrays"`
+	TimeNS       int64   `json:"time_ns"`
+}
+
+func sortSequential(toSort [][]int) [][]int {
+	sortedArrays := make([][]int, len(toSort))
+	for i, arr := range toSort {
+		sortedArr := make([]int, len(arr))
+		copy(sortedArr, arr)
+		sort.Ints(sortedArr)
+		sortedArrays[i] = sortedArr
+	}
+	return sortedArrays
+}
+
+func sortConcurrent(toSort [][]int) [][]int {
+	var wg sync.WaitGroup
+	var mutex sync.Mutex
+	sortedArrays := make([][]int, len(toSort))
+	for i, arr := range toSort {
+		wg.Add(1)
+		go func(i int, arr []int) {
+			defer wg.Done()
+			sortedArr := make([]int, len(arr))
+			copy(sortedArr, arr)
+			sort.Ints(sortedArr)
+
+			mutex.Lock()
+			sortedArrays[i] = sortedArr
+			mutex.Unlock()
+		}(i, arr)
+	}
+	wg.Wait()
+	return sortedArrays
+}
+
+func processSingleHandler(w http.ResponseWriter, r *http.Request) {
+	var payload RequestPayload
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, "Invalid JSON payload", http.StatusBadRequest)
+		return
+	}
+
+	startTime := time.Now()
+	sortedArrays := sortSequential(payload.ToSort)
+	timeTaken := time.Since(startTime).Nanoseconds()
+
+	response := ResponsePayload{
+		SortedArrays: sortedArrays,
+		TimeNS:       timeTaken,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+func processConcurrentHandler(w http.ResponseWriter, r *http.Request) {
+	var payload RequestPayload
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, "Invalid JSON payload", http.StatusBadRequest)
+		return
+	}
+
+	startTime := time.Now()
+	sortedArrays := sortConcurrent(payload.ToSort)
+	timeTaken := time.Since(startTime).Nanoseconds()
+
+	response := ResponsePayload{
+		SortedArrays: sortedArrays,
+		TimeNS:       timeTaken,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+func main() {
+	http.HandleFunc("/process-single", processSingleHandler)
+	http.HandleFunc("/process-concurrent", processConcurrentHandler)
+
+	port := 8000
+	fmt.Printf("Server is running on port %d...\n", port)
+	err := http.ListenAndServe(fmt.Sprintf(":%d", port), nil)
+	if err != nil {
+		fmt.Println(err)
+	}
+}
